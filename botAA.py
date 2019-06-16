@@ -6,11 +6,11 @@
     -> Implementar as estratégias de early e late
     -> Cancelar a construção de estruturas que estejam sendo atacadas.
     -> Definir quais unidades inimigas devem ser atacadas primeiro (priorizar a unidade mais "valiosa" que esteja mais perto)
-    Sobre Upgrades:
+    -> Sobre Upgrades:
         It usually comes down to preference but most people will tell you to prioritize weapons upgrades against Zerg and fellow Protoss, and to prioritize armor upgrades against Terran.
         Keep in mind this is when working off one Forge, as soon as you get two Forges that you can continuously upgrade out of, this is irrelevant.
         Also, save shields for last ALWAYS
-
+    -> No começo, dar prioridade à construção do gateway > cybernetics core antes do próximo nexus
     função main_base_ramp
 
     Olhar get_available_abilities no bot_ai pra usar as habilidades das unidades quando for batalhar
@@ -32,8 +32,9 @@ class BotAA(sc2.BotAI):
         self.iteration = 0
         self.strategy = "e"
         self.max_workers = 75
-        self.gateways_per_nexus = 2
-        self.enemy_units = []        
+        self.gateways_per_nexus = 1
+        self.enemy_units = []
+        self.min_army_size = 20 # Minimum number of army units before attacking.
         
 
     async def on_step(self, iteration):
@@ -44,14 +45,15 @@ class BotAA(sc2.BotAI):
         elif self.strategy == "l":
             await self.late_game_strategy()
 
-        if self.strategy == "e" and (self.time > 180 or len(self.units(NEXUS)) >= 2 or len(self.units(STALKER)) >= 10):
+        # Define more rules to change to late game
+        if self.strategy == "e" and (self.time > 180):
+            await self.chat_send("Entering late game strategy. Current time: " + self.time_formatted)
             self.strategy = "l"
+            self.gateways_per_nexus = 2
 
         if self.iteration % 10 == 0:
             await self.distribute_workers()
-            #await self.chat_send(str(self.time) + ", " + self.time_formatted)
 
-        await self.expand()
         await self.build_pylons()
         await self.manage_bases()
         await self.offensive_force_buildings()
@@ -66,12 +68,13 @@ class BotAA(sc2.BotAI):
     async def do(self, action):
         self.actions_list.append(action)
 
+
     # TODO: implement early game strategy
     async def early_game_strategy(self):
         prefered_base_count = 2
 
-        #if self.units(NEXUS).amount < prefered_base_count:
-            
+        if self.units(NEXUS).amount < prefered_base_count:
+            await self.expand()
         '''
             construir algumas defesas
             construir pylon > gateway > cybernetics > pylon
@@ -94,6 +97,9 @@ class BotAA(sc2.BotAI):
         prefered_base_count = max(prefered_base_count, 2) # Take natural ASAP (i.e. minimum 2 bases)
         current_base_count = self.units(NEXUS).ready.filter(lambda unit: unit.ideal_harvesters >= 10).amount # Only count bases as active if they have at least 10 ideal harvesters (will decrease as it's mined out)
 
+        if current_base_count < prefered_base_count:
+            await self.expand()
+
         '''
             Construir robotics bay, twilight consul para construir colossus e dark templar
             Pesquisar thermal lance e psionic storm
@@ -106,6 +112,7 @@ class BotAA(sc2.BotAI):
         await self.do_actions(self.actions_list)
         self.actions_list = [] # Reset actions list
               
+
     async def build_workers(self, nexus):
         if nexus.is_idle and self.can_afford(PROBE) and nexus.assigned_harvesters <= (nexus.ideal_harvesters + 3) and self.workers.amount < self.max_workers and self.supply_used < 180:
             await self.do(nexus.train(PROBE))
@@ -148,10 +155,12 @@ class BotAA(sc2.BotAI):
     async def offensive_force_buildings(self):
         if self.units(PYLON).ready.exists:
             pylon = self.units(PYLON).ready.random
+            
             if self.units(GATEWAY).ready.exists and not self.units(CYBERNETICSCORE):
                 if self.can_afford(CYBERNETICSCORE) and not self.already_pending(CYBERNETICSCORE):
                     await self.build(CYBERNETICSCORE, near=pylon.position.towards(self.game_info.map_center, 2))
-            elif len(self.units(GATEWAY)) < 3:
+            
+            elif len(self.units(GATEWAY)) / len(self.units(NEXUS)) < self.gateways_per_nexus:
                 if self.can_afford(GATEWAY) and not self.already_pending(GATEWAY):
                     await self.build(GATEWAY, near=pylon.position.towards(self.game_info.map_center, 2))
 
@@ -172,7 +181,7 @@ class BotAA(sc2.BotAI):
 
 
     async def attack(self):
-        if self.units(STALKER).amount > 15:
+        if self.units(STALKER).amount > self.min_army_size:
             for s in self.units(STALKER).idle:
                 await self.do(s.attack(self.find_target(self.state)))
 
@@ -182,7 +191,7 @@ class BotAA(sc2.BotAI):
 
 
     async def manage_bases(self):
-        # Do some logic for each nexus
+        # Managing workers, assimilators, chronoboost
         for nexus in self.units(NEXUS).ready:
 
             await self.build_workers(nexus)
@@ -246,7 +255,7 @@ def main():
     sc2.run_game(sc2.maps.get("Abyssal Reef LE"), [
         Bot(Race.Protoss, BotAA()),
         Computer(Race.Terran, Difficulty.Medium)
-    ], realtime=False)
+    ], realtime=True)
 
 if __name__ == '__main__':
     main()
