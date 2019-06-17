@@ -32,7 +32,7 @@ class BotAA(sc2.BotAI):
         self.iteration = 0
         self.strategy = "e"
         self.max_workers = 75
-        self.gateways_per_nexus = 1
+        self.gateways_per_nexus = 2
         self.enemy_units = []
         self.min_army_size = 20 # Minimum number of army units before attacking.
         
@@ -45,7 +45,7 @@ class BotAA(sc2.BotAI):
         elif self.strategy == "l":
             await self.late_game_strategy()
 
-        # Define more rules to change to late game
+        # Definir mais regras necessarias para mudar pro late game
         if self.strategy == "e" and (self.time > 180):
             await self.chat_send("Entering late game strategy. Current time: " + self.time_formatted)
             self.strategy = "l"
@@ -75,6 +75,10 @@ class BotAA(sc2.BotAI):
 
         if self.units(NEXUS).amount < prefered_base_count:
             await self.expand()
+
+        # Construir um forge 
+        # Construir um photo cannon
+        # Mandar fazer scout na base inicial
         '''
             construir algumas defesas
             construir pylon > gateway > cybernetics > pylon
@@ -101,11 +105,24 @@ class BotAA(sc2.BotAI):
             await self.expand()
 
         '''
-            Construir robotics bay, twilight consul para construir colossus e dark templar
-            Pesquisar thermal lance e psionic storm
+                        EARLY                               LATE
+            (Gateway > Cybernetics Core) -> (Twilight Council > Templar Archives)
+                                         -> (Robotics Facility > Robotics Bay)
+            Construir robotics bay, twilight consul para construir Colossus e High Templar
         '''
         return
 
+    async def manage_upgrades(self):
+        '''
+        Early Game:
+            Se já existir cybernetics e estiver idle, treinar warpgate
+            Se já existir forge e não estiver treinando, treinar arma nv 1
+            Se já existir forge e não estiver treinando, treinar armor nv 1
+        Late game:
+            Pesquisar Upgrades de arma e armor nivel 2 no forge
+            Pesquisar thermal lance (Robotics Bay) e psionic storm (templar archives)
+        '''
+        return
 
     # Execute all orders in self.actions_list and reset it
     async def execute_actions_list(self):
@@ -130,7 +147,7 @@ class BotAA(sc2.BotAI):
             return
 
         # supply_left: Available Population to Produce 
-        if self.supply_left <= 6 and not self.already_pending(PYLON) and self.supply_cap < 190:
+        if self.supply_left <= 7 and not self.already_pending(PYLON) and self.supply_cap < 190:
                 if self.can_afford(PYLON):
                     await self.build(PYLON, near=nexus.position.towards(self.game_info.map_center, 10))
 
@@ -255,7 +272,7 @@ def main():
     sc2.run_game(sc2.maps.get("Abyssal Reef LE"), [
         Bot(Race.Protoss, BotAA()),
         Computer(Race.Terran, Difficulty.Medium)
-    ], realtime=True)
+    ], realtime=False)
 
 if __name__ == '__main__':
     main()
