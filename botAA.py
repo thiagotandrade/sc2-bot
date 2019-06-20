@@ -11,6 +11,7 @@
         Keep in mind this is when working off one Forge, as soon as you get two Forges that you can continuously upgrade out of, this is irrelevant.
         Also, save shields for last ALWAYS
     -> No começo, dar prioridade à construção do gateway > cybernetics core antes do próximo nexus
+    
     função main_base_ramp
 
     Olhar get_available_abilities no bot_ai pra usar as habilidades das unidades quando for batalhar
@@ -22,7 +23,10 @@ from sc2 import Difficulty, Race, maps, run_game
 from sc2.constants import (
     ASSIMILATOR, CYBERNETICSCORE, GATEWAY, NEXUS, 
     PROBE, PYLON, STALKER, EFFECT_CHRONOBOOSTENERGYCOST, 
-    CHRONOBOOSTENERGYCOST, WARPGATE, FORGE, TEMPLARARCHIVE)
+    CHRONOBOOSTENERGYCOST, WARPGATE, FORGE, TEMPLARARCHIVE,
+    PHOTONCANNON, RESEARCH_WARPGATE, MORPH_WARPGATE,
+    WARPGATETRAIN_ZEALOT, WARPGATETRAIN_STALKER, WARPGATETRAIN_HIGHTEMPLAR,
+    WARPGATETRAIN_DARKTEMPLAR, WARPGATETRAIN_SENTRY)
 from sc2.player import Bot, Computer
 
 
@@ -30,11 +34,20 @@ class BotAA(sc2.BotAI):
     def __init__(self):
         self.actions_list = []
         self.iteration = 0
-        self.strategy = "e"
         self.max_workers = 75
-        self.gateways_per_nexus = 2
-        self.enemy_units = []
-        self.min_army_size = 20 # Minimum number of army units before attacking.
+        # Number of times that we used Chronoboost on nexus
+        self.cb_on_nexus = 0
+        
+        self.strategy = "e"
+        # Below are the initial values for the early game strategy
+        self.gateways_per_nexus = 1
+        self.cannons_per_nexus = 1
+        # Minimum number of army units to attack
+        self.min_army_size = 15
+        self.proxy_built = False
+        # Probe responsible for scouting
+        self.scout = None
+        
         
 
     async def on_step(self, iteration):
@@ -45,11 +58,14 @@ class BotAA(sc2.BotAI):
         elif self.strategy == "l":
             await self.late_game_strategy()
 
-        # Definir mais regras necessarias para mudar pro late game
+        # TODO: Define more conditions for the transition to late game:
+        # When warpgate is done?
         if self.strategy == "e" and (self.time > 180):
             await self.chat_send("Entering late game strategy. Current time: " + self.time_formatted)
             self.strategy = "l"
-            self.gateways_per_nexus = 2
+            self.gateways_per_nexus = 2.5
+            self.min_army_size = 30
+            self.cannons_per_nexus = 2
 
         if self.iteration % 10 == 0:
             await self.distribute_workers()
@@ -60,6 +76,7 @@ class BotAA(sc2.BotAI):
         await self.build_offensive_force()
         await self.attack()
         await self.idle_workers()
+        #await self.build_defenses()
       
         #Execute all orders
         await self.execute_actions_list()
@@ -70,15 +87,43 @@ class BotAA(sc2.BotAI):
 
 
     # TODO: implement early game strategy
+    '''
+        Basicamente, devemos construir 1 gateway, 1 cibernetics, 1 forge e 1 nexus
+        Começar a produzir unidades de ataque
+    '''
     async def early_game_strategy(self):
         prefered_base_count = 2
 
+        # Expand up to 2 nexus
         if self.units(NEXUS).amount < prefered_base_count:
             await self.expand()
 
-        # Construir um forge 
+        # In early game, we only want 1 forge
+        if self.units(GATEWAY).ready and self.units(CYBERNETICSCORE).ready and not self.units(FORGE).exists and not self.already_pending(FORGE):
+            await self.build_forge()
+
+        # Research Warpgate
+        if self.units(CYBERNETICSCORE).ready.exists and self.can_afford(RESEARCH_WARPGATE):
+            cybernetics = self.units(CYBERNETICSCORE).first
+            if cybernetics.noqueue and await self.has_ability(RESEARCH_WARPGATE, cybernetics):
+                await self.do(cybernetics(RESEARCH_WARPGATE))
+
         # Construir um photo cannon
         # Mandar fazer scout na base inicial
+
+
+        # Build pylon near enemy base and use the probe who as scout
+        # TODO: Choose better condition to place proxy (maybe after warpgate is searched. It will prob need to be on late game)
+        if not self.proxy_built and self.units(CYBERNETICSCORE).amount >= 1 and self.can_afford(PYLON):
+            worker = self.units(PROBE).closest_to(self.find_target(self.state))
+            
+            if worker is not None:   
+                p = self.game_info.map_center.towards(self.find_target(self.state), 25)
+                        
+                await self.build(PYLON, near=p, unit=worker)
+                self.proxy_built = True
+                if not self.scout:
+                    self.scout = worker
         '''
             construir algumas defesas
             construir pylon > gateway > cybernetics > pylon
@@ -88,8 +133,6 @@ class BotAA(sc2.BotAI):
                 * começar a pesquisar warpgate
             construir forge
         '''
-        
-        return
 
 
     # TODO: implement late game strategy
@@ -98,7 +141,6 @@ class BotAA(sc2.BotAI):
         # Make sure to expand in late game (every 2.5 minutes)
         expand_every = 2.5 * 60 # Seconds
         prefered_base_count = 1 + int(self.time / expand_every)
-        prefered_base_count = max(prefered_base_count, 2) # Take natural ASAP (i.e. minimum 2 bases)
         current_base_count = self.units(NEXUS).ready.filter(lambda unit: unit.ideal_harvesters >= 10).amount # Only count bases as active if they have at least 10 ideal harvesters (will decrease as it's mined out)
 
         if current_base_count < prefered_base_count:
@@ -110,7 +152,7 @@ class BotAA(sc2.BotAI):
                                          -> (Robotics Facility > Robotics Bay)
             Construir robotics bay, twilight consul para construir Colossus e High Templar
         '''
-        return
+
 
     async def manage_upgrades(self):
         '''
@@ -147,22 +189,32 @@ class BotAA(sc2.BotAI):
             return
 
         # supply_left: Available Population to Produce 
-        if self.supply_left <= 7 and not self.already_pending(PYLON) and self.supply_cap < 190:
+        if self.supply_left <= 5 and not self.already_pending(PYLON) and self.supply_cap < 190:
                 if self.can_afford(PYLON):
                     await self.build(PYLON, near=nexus.position.towards(self.game_info.map_center, 10))
 
 
     async def build_assimilators(self, nexus):
-        vespenes = self.state.vespene_geyser.closer_than(15.0, nexus)
-        for vespene in vespenes:
-            if not self.can_afford(ASSIMILATOR):
-                break
-            worker = self.select_build_worker(vespene.position)
-            if worker is None:
-                break
-            if not self.units(ASSIMILATOR).closer_than(1.0, vespene).exists:
-                await self.do(worker.build(ASSIMILATOR, vespene))
+        # We want to build assimilators only after we start building a gateway
+        if self.units(GATEWAY).exists:
+            vespenes = self.state.vespene_geyser.closer_than(15.0, nexus)
+            for vespene in vespenes:
+                if not self.can_afford(ASSIMILATOR):
+                    break
+                worker = self.select_build_worker(vespene.position)
+                if worker is None:
+                    break
+                if not self.units(ASSIMILATOR).closer_than(1.0, vespene).exists:
+                    await self.do(worker.build(ASSIMILATOR, vespene))
 
+
+    async def build_defenses(self):
+        nexus = self.units(NEXUS).closest_to(self.find_target(self.state))
+        if self.units(FORGE).ready and self.units(PHOTONCANNON).amount / self.units(NEXUS).amount <= self.cannons_per_nexus and self.can_afford(PHOTONCANNON):
+            pylon = self.units(PYLON).closer_than(50, nexus).random
+            if pylon is not None:
+                await self.build(PHOTONCANNON, near=pylon)
+        
 
     async def expand(self):
         if self.can_afford(NEXUS) and not self.already_pending(NEXUS):
@@ -171,21 +223,33 @@ class BotAA(sc2.BotAI):
 
     async def offensive_force_buildings(self):
         if self.units(PYLON).ready.exists:
-            pylon = self.units(PYLON).ready.random
-            
+            pylon = self.units(PYLON).ready.closest_to(self.units(NEXUS).random)
+            position = pylon.position.towards(self.game_info.map_center)
+           
             if self.units(GATEWAY).ready.exists and not self.units(CYBERNETICSCORE):
                 if self.can_afford(CYBERNETICSCORE) and not self.already_pending(CYBERNETICSCORE):
-                    await self.build(CYBERNETICSCORE, near=pylon.position.towards(self.game_info.map_center, 2))
+                    await self.build(CYBERNETICSCORE, near=position)
             
-            elif len(self.units(GATEWAY)) / len(self.units(NEXUS)) < self.gateways_per_nexus:
+            elif self.units(GATEWAY).amount / self.units(NEXUS).amount <= self.gateways_per_nexus:
                 if self.can_afford(GATEWAY) and not self.already_pending(GATEWAY):
-                    await self.build(GATEWAY, near=pylon.position.towards(self.game_info.map_center, 2))
+                    await self.build(GATEWAY, near=position)
 
 
     async def build_offensive_force(self):
+        # For each gateway, if we can, morph into warpgate. If not, train stalker
         for gw in self.units(GATEWAY).ready.idle:
-            if self.can_afford(STALKER) and self.supply_left > 0:
+            if await self.has_ability(MORPH_WARPGATE, gw) and self.can_afford(MORPH_WARPGATE):
+                await self.do(gw(MORPH_WARPGATE))
+            else:
+                if self.can_afford(STALKER) and self.supply_left > 0:
                     await self.do(gw.train(STALKER))
+
+        for warpgate in self.units(WARPGATE).ready.idle:
+            if await self.has_ability(WARPGATETRAIN_ZEALOT, warpgate):
+                pos = self.units(PYLON).closest_to(self.find_target(self.state)).position.to2.random_on_distance(4)
+                placement = await self.find_placement(WARPGATETRAIN_STALKER, pos, placement_step=1)
+                if placement is not None:
+                    await self.do(warpgate.warp_in(STALKER, placement))
 
 
     def find_target(self, state):
@@ -208,7 +272,7 @@ class BotAA(sc2.BotAI):
 
 
     async def manage_bases(self):
-        # Managing workers, assimilators, chronoboost
+        # Managing workers, assimilators, chronoboost and nexus defenses
         for nexus in self.units(NEXUS).ready:
 
             await self.build_workers(nexus)
@@ -245,8 +309,9 @@ class BotAA(sc2.BotAI):
                         await self.do(nexus(EFFECT_CHRONOBOOSTENERGYCOST, gateway))
                         return # Don't CB anything else this step
                 
-                if not nexus.is_idle and not nexus.has_buff(CHRONOBOOSTENERGYCOST):
+                if not nexus.is_idle and not nexus.has_buff(CHRONOBOOSTENERGYCOST) and self.cb_on_nexus < 2:
                     await self.do(nexus(EFFECT_CHRONOBOOSTENERGYCOST, nexus))
+                    self.cb_on_nexus += 1
                     return # Don't CB anything else this step
 
             # Late game (l)      
@@ -268,10 +333,16 @@ class BotAA(sc2.BotAI):
                         return # Don't CB anything else this step
 
 
+    async def build_forge(self):
+        if not self.already_pending(FORGE) and self.can_afford(FORGE):
+            pylons = self.units(PYLON).ready
+            if len(pylons) > 0:
+                await self.build(FORGE, near=pylons.closest_to(self.units(NEXUS).first))
+
 def main():
     sc2.run_game(sc2.maps.get("Abyssal Reef LE"), [
         Bot(Race.Protoss, BotAA()),
-        Computer(Race.Terran, Difficulty.Medium)
+        Computer(Race.Terran, Difficulty.Hard)
     ], realtime=False)
 
 if __name__ == '__main__':
