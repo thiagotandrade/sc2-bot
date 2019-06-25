@@ -26,7 +26,7 @@ from sc2.constants import (
     CHRONOBOOSTENERGYCOST, WARPGATE, FORGE, TEMPLARARCHIVE,
     PHOTONCANNON, RESEARCH_WARPGATE, MORPH_WARPGATE, PATROL, WARPGATETRAIN_ZEALOT,
     WARPGATETRAIN_STALKER, WARPGATETRAIN_HIGHTEMPLAR, WARPGATETRAIN_SENTRY,
-    COLOSSUS, IMMORTAL, VOIDRAY,
+    COLOSSUS, IMMORTAL, VOIDRAY, ROBOTICSFACILITY,
     DRONE, SCV, PROBE, EGG, LARVA, OVERLORD, OVERSEER, OBSERVER, BROODLING, INTERCEPTOR, MEDIVAC, CREEPTUMOR, CREEPTUMORBURROWED, CREEPTUMORQUEEN, CREEPTUMORMISSILE)
 from sc2.player import Bot, Computer
 
@@ -45,7 +45,7 @@ class BotAA(sc2.BotAI):
         #### Initial values for the early game ####
         self.gateways_per_nexus = 1
         self.cannons_per_nexus = 1
-        self.min_army_size = 15
+        self.min_army_size = 20
         self.stalker_ratio = 1
         self.colossus_ratio = self.immortal_ratio = self.voidray_ratio = 0
         #### End of Early game initial values ####
@@ -112,7 +112,22 @@ class BotAA(sc2.BotAI):
             if cybernetics.is_idle and await self.has_ability(RESEARCH_WARPGATE, cybernetics):
                 await self.do(cybernetics(RESEARCH_WARPGATE))
 
-        # Mandar fazer scout na base inicial
+        # Patrol from enemy base to the center of the map
+        # Check if we already have a scout     
+        scout = None       
+        for worker in self.workers:
+            if len(worker.orders) >= 1 and worker.orders[0].ability.id == PATROL:
+                scout = worker
+        # If we don't have a scout, assign one
+        if not scout:
+            scout = self.workers.closest_to(self.start_location)
+            # If we still don't have a scout, do nothing
+            if scout:
+                await self.do(scout(PATROL, target=self.enemy_start_locations[0]))
+        else:
+            target = self.unit_target_position(scout)
+            if scout.distance_to(target) < 5 or self.nearby_enemy_units(scout).exists:
+                await self.do(scout(PATROL, target=self.game_info.map_center))
         '''
             construir algumas defesas
             construir pylon > gateway > cybernetics > pylon
@@ -186,12 +201,13 @@ class BotAA(sc2.BotAI):
 
 
     async def scouting(self):
-        if self.time > 60: 
+        if self.time > 120: 
             scout = None
 
             # Check if we already have a scout            
             for worker in self.workers:
-                if self.has_order([PATROL], worker):
+                #if self.has_order([PATROL], worker):
+                if len(worker.orders) >= 1 and worker.orders[0].ability.id == PATROL:
                     scout = worker
             
             expansion_location = random.choice(list(self.expansion_locations.keys()))
@@ -203,24 +219,27 @@ class BotAA(sc2.BotAI):
                     return
             
             # If scout was not designated to patrol, do it now
-            if not self.has_order([PATROL], scout):
+            if not scout.orders[0].ability.id == PATROL:
+            #if not self.has_order([PATROL], scout):
                 await self.do(scout(PATROL, target=expansion_location))
                 return
             
             # If we arrived at our destination, choose another one
-            target = position.Point2((scout.orders[0].target.x, scout.orders[0].target.y))
+            target = self.unit_target_position(scout)
             if scout.distance_to(target) < 10:
                 await self.do(scout(PATROL, target=expansion_location))
                 return
             
             # If there are enemies nearby, run away
-            nearby_enemy_units = self.known_enemy_units.filter(lambda unit: unit.type_id not in self.units_to_ignore).closer_than(10, scout)
-            if nearby_enemy_units.exists:
+            if self.nearby_enemy_units(scout).exists:
                 await self.do(scout(PATROL, target=self.game_info.map_center))
-                return
+                return          
 
-            
+    def nearby_enemy_units(self, unit):
+        return self.known_enemy_units.filter(lambda u: u.type_id not in self.units_to_ignore).closer_than(10, unit)
 
+    def unit_target_position(self, scout):
+        return sc2.position.Point2((scout.orders[0].target.x, scout.orders[0].target.y))
 
     async def build_assimilators(self, nexus):
         # We want to build assimilators only after we start building a gateway
@@ -294,8 +313,11 @@ class BotAA(sc2.BotAI):
         else:
             return self.enemy_start_locations[0]
 
+
     # TODO: Better attack conditions. Separate between attack and defense. Assign units only to defend?
     async def attack(self):
+        #army_rate= 5 * (self.time / 60) - 20
+        #if self.units(STALKER).amount > army_rate and army_rate > 0:
         if self.units(STALKER).amount > self.min_army_size:
             for s in self.units(STALKER).idle:
                 await self.do(s.attack(self.find_target(self.state)))
@@ -311,7 +333,7 @@ class BotAA(sc2.BotAI):
     async def nexus_has_enemy_nearby(self):
         nexus_with_enemy = []
         for nexus in self.units(NEXUS):
-            if self.known_enemy_units.closer_than(50, nexus):
+            if self.nearby_enemy_units(nexus):
                 nexus_with_enemy.append(nexus)
         return nexus_with_enemy
 
@@ -332,6 +354,7 @@ class BotAA(sc2.BotAI):
             return True
         else:
             return False
+
 
     async def handle_chronoboost(self, nexus):
         '''
@@ -390,7 +413,7 @@ class BotAA(sc2.BotAI):
         # TODO: Choose better condition to place proxy
         # Maybe check before if we have a scout already
         if self.units(WARPGATE).amount > 1 and self.can_afford(PYLON):
-            worker = self.units(PROBE).closest_to(self.find_target(self.state))
+            worker = self.units(PROBE).closest_to(self.units(NEXUS).first)
 
             if worker is not None:   
                 # TODO: change proxy location to be closer to enemy natural
@@ -419,9 +442,9 @@ class BotAA(sc2.BotAI):
 
 
 def main():
-    sc2.run_game(sc2.maps.get("Abyssal Reef LE"), [
+    sc2.run_game(sc2.maps.get("Cyber Forest LE"), [
         Bot(Race.Protoss, BotAA()),
-        Computer(Race.Terran, Difficulty.Hard)
+        Computer(Race.Protoss, Difficulty.Hard)
     ], realtime=False)
 
 if __name__ == '__main__':
