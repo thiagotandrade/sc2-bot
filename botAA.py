@@ -284,14 +284,14 @@ class BotAA(sc2.BotAI):
         if self.units(PYLON).ready.exists:
             pylon = self.units(PYLON).ready.closest_to(self.units(NEXUS).random)
             position = pylon.position.towards(self.game_info.map_center)
-           
-            if self.units(GATEWAY).ready.exists and not self.units(CYBERNETICSCORE):
-                if self.can_afford(CYBERNETICSCORE) and not self.already_pending(CYBERNETICSCORE):
-                    await self.build(CYBERNETICSCORE, near=position)
-            
-            elif (self.units(GATEWAY).amount + self.units(WARPGATE).amount) / self.units(NEXUS).amount < self.gateways_per_nexus and (self.units(GATEWAY).amount + self.units(WARPGATE).amount) < 10:
-                if self.can_afford(GATEWAY) and not self.already_pending(GATEWAY):
-                    await self.build(GATEWAY, near=position)
+            if pylon and position:
+                if self.units(GATEWAY).ready.exists and not self.units(CYBERNETICSCORE):
+                    if self.can_afford(CYBERNETICSCORE) and not self.already_pending(CYBERNETICSCORE):
+                        await self.build(CYBERNETICSCORE, near=position)
+                
+                elif (self.units(GATEWAY).amount + self.units(WARPGATE).amount) / self.units(NEXUS).amount < self.gateways_per_nexus and (self.units(GATEWAY).amount + self.units(WARPGATE).amount) < 10:
+                    if self.can_afford(GATEWAY) and not self.already_pending(GATEWAY):
+                        await self.build(GATEWAY, near=position)
 
 
     async def build_offensive_force(self):
@@ -324,9 +324,11 @@ class BotAA(sc2.BotAI):
 
     # TODO: Better attack conditions. Separate between attack and defense. Assign units only to defend?
     async def manage_army(self):
-        if self.units(STALKER).amount >= self.min_army_size or self.supply_left <= 10:
+        # We attack if we have minimum army size or if population is nearly full
+        if self.units(STALKER).amount >= self.min_army_size or self.supply_cap >= 190:
             for s in self.units(STALKER).idle:
                 await self.do(s.attack(self.find_target(self.state)))
+                print("ATTACK!")
 
         # Defend from enemies near our nexuses
         elif self.units(STALKER).amount > 3 and len(self.known_enemy_units) > 0:
@@ -334,6 +336,7 @@ class BotAA(sc2.BotAI):
             if len(close_enemy_units) > 0:
                 for s in self.units(STALKER).idle:
                     await self.do(s.attack(random.choice(close_enemy_units).position.towards(self.enemy_start_locations[0])))
+                    print("DEFEND!")
 
 
     async def nexus_has_enemy_nearby(self):
