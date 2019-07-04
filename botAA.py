@@ -289,7 +289,7 @@ class BotAA(sc2.BotAI):
                 if self.can_afford(CYBERNETICSCORE) and not self.already_pending(CYBERNETICSCORE):
                     await self.build(CYBERNETICSCORE, near=position)
             
-            elif (self.units(GATEWAY).amount + self.units(WARPGATE).amount) / self.units(NEXUS).amount < self.gateways_per_nexus:
+            elif (self.units(GATEWAY).amount + self.units(WARPGATE).amount) / self.units(NEXUS).amount < self.gateways_per_nexus and (self.units(GATEWAY).amount + self.units(WARPGATE).amount) < 10:
                 if self.can_afford(GATEWAY) and not self.already_pending(GATEWAY):
                     await self.build(GATEWAY, near=position)
 
@@ -324,7 +324,7 @@ class BotAA(sc2.BotAI):
 
     # TODO: Better attack conditions. Separate between attack and defense. Assign units only to defend?
     async def manage_army(self):
-        if self.units(STALKER).amount > self.min_army_size:
+        if self.units(STALKER).amount >= self.min_army_size or self.supply_left <= 10:
             for s in self.units(STALKER).idle:
                 await self.do(s.attack(self.find_target(self.state)))
 
@@ -334,6 +334,7 @@ class BotAA(sc2.BotAI):
             if len(close_enemy_units) > 0:
                 for s in self.units(STALKER).idle:
                     await self.do(s.attack(random.choice(close_enemy_units).position.towards(self.enemy_start_locations[0])))
+
 
     async def nexus_has_enemy_nearby(self):
         nexus_with_enemy = []
