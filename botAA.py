@@ -1,24 +1,12 @@
-'''
-    bot_ai.py:
-        Linha 518. O parametro max_distance por padrão é 20 (está 8)
-    
-    Ideias:
-    -> Cancelar a construção de estruturas que estejam sendo atacadas.
-    -> Definir quais unidades inimigas devem ser atacadas primeiro (priorizar a unidade mais "valiosa" que esteja mais perto)
-    -> Sobre Upgrades:
-        It usually comes down to preference but most people will tell you to prioritize weapons upgrades against Zerg and fellow Protoss, and to prioritize armor upgrades against Terran.
-        Keep in mind this is when working off one Forge, as soon as you get two Forges that you can continuously upgrade out of, this is irrelevant.
-        Also, save shields for last ALWAYS
-    
-    função main_base_ramp para ver a rampa principal
-'''
+# TODO: Better attack conditions. Separate between attack and defense. Assign units only to defend?
+# TODO: Better distribute photon cannons along nexuses
+# TODO: Change proxy location to be closer to enemy natural and in a harder place to find
 import random
 
 import sc2
 from sc2 import Difficulty, Race, maps, run_game, position
 from sc2.constants import *
 from sc2.player import Bot, Computer
-
 
 class BotAA(sc2.BotAI):
     def __init__(self):
@@ -35,10 +23,11 @@ class BotAA(sc2.BotAI):
         self.strategy = "e"
         #### Initial values for the early game ####
         self.prefered_base_count = 2
-        self.gateways_per_nexus = 1
+        self.gateways_per_nexus = self.stargates_per_nexus = 1
         self.defense_type_per_nexus = 1
         self.min_army_size = 10
-        self.stalker_ratio = 1
+        self.stalker_ratio = 0.9
+        self.voidray_ratio = 0.1
         self.colossus_ratio = self.immortal_ratio = self.voidray_ratio = 0
         #### End of Early game initial values ####
 
@@ -46,11 +35,14 @@ class BotAA(sc2.BotAI):
     async def on_step(self, iteration):
         self.iteration = iteration
         
-        if self.strategy == "e" and (self.time > 180 or self.vespene > 400 or self.minerals > 800):
+        if self.strategy == "e" and (self.time > 280 or self.vespene > 400 or self.minerals > 800):
             await self.chat_send("Entering late game strategy. Current time: " + self.time_formatted)
             self.strategy = "l"
-            self.gateways_per_nexus = 2.5
+            self.gateways_per_nexus = 3
+            self.stargates_per_nexus = 1
             self.defense_type_per_nexus = 1.5
+            self.stalker_ratio = 0.8
+            self.voidray_ratio = 0.2
 
         if self.iteration % 50 == 0:
             await self.distribute_workers()
@@ -101,11 +93,10 @@ class BotAA(sc2.BotAI):
                 if scout:
                     await self.do(scout(PATROL, target=self.enemy_start_locations[0]))
             else:
-                if self.nearby_enemy_units(scout).exists:
+                if self.nearby_enemy_units(scout, 10).exists:
                     await self.do(scout(PATROL, target=self.game_info.map_center.towards(self.enemy_start_locations[0], 20)))
 
 
-    # TODO: implement late game strategy
     async def late_game_strategy(self):        
 
         self.prefered_base_count = 1 + int(self.time / self.expand_every)
@@ -119,8 +110,8 @@ class BotAA(sc2.BotAI):
             self.min_army_size += 10 
             await self.chat_send("Current min army size: " + str(self.min_army_size) + " (@" + self.time_formatted + ")" )
     
-        if not self.proxy_built:
-            await self.build_proxy_pylon()
+        #if not self.proxy_built:
+            #await self.build_proxy_pylon()
 
         # In late game, we want to have 2 forges to upgrade ground units
         if self.units(FORGE).amount < 2:
@@ -129,21 +120,13 @@ class BotAA(sc2.BotAI):
         if self.units(TWILIGHTCOUNCIL).amount < 1:
             await self.build_twilight_council()
 
-        '''
-                        EARLY                               LATE
-            (Gateway > Cybernetics Core) -> (Twilight Council > Templar Archives)
-                                         -> (Robotics Facility > Robotics Bay)
-            Construir robotics bay, twilight consul para construir Colossus e High Templar
-        '''
 
     async def current_base_count(self):
         # Only count bases as active if they have at least 10 ideal harvesters (will decrease as it's mined out)
         return self.units(NEXUS).ready.filter(lambda unit: unit.ideal_harvesters >= 10).amount 
 
 
-    # Focus on ground units then colossus and high templars upgrades
     async def manage_upgrades(self):
-        
         for forge in self.units(FORGE).ready:
             if forge.is_idle:
                 for upgrade_level in range(1, 4):
@@ -162,24 +145,28 @@ class BotAA(sc2.BotAI):
                         if self.can_afford(shield_armor_id):
                             await self.do(forge(shield_armor_id))
                         return
-        
+
+        cybernetics = self.units(CYBERNETICSCORE).ready    
+        if cybernetics.exists and cybernetics.idle:
+            for upgrade_level in range(1, 4):
+                upgrade_air_weapon_id = getattr(sc2.constants, "CYBERNETICSCORERESEARCH_PROTOSSAIRWEAPONSLEVEL" + str(upgrade_level))
+                upgrade_air_armor_id = getattr(sc2.constants, "CYBERNETICSCORERESEARCH_PROTOSSAIRARMORLEVEL" + str(upgrade_level))
+                if await self.has_ability(upgrade_air_weapon_id, cybernetics):
+                    print("Can Afford?")
+                    if self.can_afford(upgrade_air_weapon_id):
+                        await self.do(cybernetics(upgrade_air_weapon_id))
+                    return
+                elif await self.has_ability(upgrade_air_armor_id, cybernetics):
+                    if self.can_afford(upgrade_air_armor_id):
+                        await self.do(cybernetics(upgrade_air_armor_id))
+                    return
+
         if self.enemy_race != Race.Zerg:
             robotics = self.units(ROBOTICSBAY)
-            if robotics.filter(lambda r: r.ready and r.is_idle) and await self.has_ability(RESEARCH_EXTENDEDTHERMALLANCE, robotics) and self.can_afford(RESEARCH_EXTENDEDTHERMALLANCE):
+            if robotics.filter(lambda r: r.ready and r.idle) and await self.has_ability(RESEARCH_EXTENDEDTHERMALLANCE, robotics) and self.can_afford(RESEARCH_EXTENDEDTHERMALLANCE):
                 await self.do(robotics(RESEARCH_EXTENDEDTHERMALLANCE))
                 return
 
-        #else:
-        # if race is not zerg, train colossus upgrades, else dont
-        '''
-        Early Game:
-            Se já existir cybernetics e estiver idle, treinar warpgate
-            Se já existir forge e não estiver treinando, treinar arma nv 1
-            Se já existir forge e não estiver treinando, treinar armor nv 1
-        Late game:
-            Pesquisar Upgrades de arma e armor nivel 2 no forge
-            Pesquisar thermal lance (Robotics Bay) e psionic storm (templar archives)
-        '''
 
     # Execute all orders in self.actions_list and reset it
     async def execute_actions_list(self):
@@ -191,7 +178,8 @@ class BotAA(sc2.BotAI):
         if nexus.is_idle and self.can_afford(PROBE) and nexus.assigned_harvesters < (nexus.ideal_harvesters + 3) and self.workers.amount < self.max_workers and self.supply_used < 180:
             await self.do(nexus.train(PROBE))
 
-    # Force idle workers near nexus to mine
+
+    # Force idle workers to mine at nearest nexus
     async def idle_workers(self):
         if self.workers.idle.exists:
             worker = self.workers.idle.first
@@ -199,9 +187,11 @@ class BotAA(sc2.BotAI):
             
 
     async def build_pylons(self, nexus):
-        # supply_left: Available Population to Produce 
+        # supply_left: Available Population to produce 
         if nexus and self.supply_left < 5 and not self.already_pending(PYLON) and self.supply_cap < 190 and self.can_afford(PYLON):
-            await self.build(PYLON, near=nexus.position.towards(self.game_info.map_center, 10))
+            position = await self.find_placement(PYLON, nexus.position.towards(self.game_info.map_center, 10), max_distance=20, random_alternative=False, placement_step=3)
+            if position:
+                await self.build(PYLON, near=position)
 
 
     async def scouting(self):
@@ -228,22 +218,20 @@ class BotAA(sc2.BotAI):
                     return
                 
                 # If we arrived at our destination, choose another one
-                #target = self.unit_target_position(scout)
                 target = scout.order_target
                 if scout.distance_to(target) <= 2:
                     await self.do(scout(PATROL, target=expansion_location))
                     return
             
             # If there are enemies nearby, run away
-            if self.nearby_enemy_units(scout).exists:
+            if self.nearby_enemy_units(scout, 10).exists:
                 await self.do(scout(PATROL, target=self.game_info.map_center))
                 return          
 
-    def nearby_enemy_units(self, unit):
-        return self.known_enemy_units.filter(lambda u: u.type_id not in self.units_to_ignore and u.type_id not in self.known_enemy_structures).closer_than(20, unit)
 
-    def unit_target_position(self, scout):
-        return sc2.position.Point2((scout.orders[0].target.x, scout.orders[0].target.y))
+    def nearby_enemy_units(self, unit, distance):
+        return self.known_enemy_units.filter(lambda u: u.type_id not in self.units_to_ignore and u.type_id not in self.known_enemy_structures).closer_than(distance, unit)
+
 
     async def build_assimilators(self, nexus):
         # We want to build assimilators only after we start building a gateway
@@ -260,18 +248,17 @@ class BotAA(sc2.BotAI):
 
 
     async def build_defenses(self, nexus):
-        # TODO: -> Better distribute photon cannons along nexuses
         # We only want to build photons after we have the desired amount of gateways, as it is our main defense
         if nexus and ((self.units(GATEWAY).amount + self.units(WARPGATE).amount) / self.units(NEXUS).amount) >= self.gateways_per_nexus:
-            pylons = self.units(PYLON).ready.closer_than(20, nexus)
+            pylons = self.units(PYLON).ready.closer_than(25, nexus)
             if pylons:
-                pylon = pylons.closest_to(nexus)
+                pylon = pylons.furthest_to(nexus)
                 if pylon:
                     if self.can_afford(PHOTONCANNON) and (self.units(PHOTONCANNON).amount / self.units(NEXUS).amount) < self.defense_type_per_nexus and self.units(PHOTONCANNON).closer_than(20, nexus).amount < self.defense_type_per_nexus:
-                        await self.build(PHOTONCANNON, near=pylon.position.towards(nexus, 10))
+                        await self.build(PHOTONCANNON, near=pylon.position.towards(self.game_info.map_center, 10))
                         return
                     if self.can_afford(SHIELDBATTERY) and (self.units(SHIELDBATTERY).amount / self.units(NEXUS).amount) < self.defense_type_per_nexus and self.units(SHIELDBATTERY).closer_than(20, nexus).amount < self.defense_type_per_nexus:
-                        await self.build(SHIELDBATTERY, near=pylon.position.towards(nexus, 10))
+                        await self.build(SHIELDBATTERY, near=pylon.position.towards(self.game_info.map_center, 15))
                         return
         
 
@@ -289,9 +276,13 @@ class BotAA(sc2.BotAI):
                     if self.can_afford(CYBERNETICSCORE) and not self.already_pending(CYBERNETICSCORE):
                         await self.build(CYBERNETICSCORE, near=position)
                 
-                elif (self.units(GATEWAY).amount + self.units(WARPGATE).amount) / self.units(NEXUS).amount < self.gateways_per_nexus and (self.units(GATEWAY).amount + self.units(WARPGATE).amount) < 10:
+                elif (self.units(GATEWAY).amount + self.units(WARPGATE).amount) / self.units(NEXUS).amount < self.gateways_per_nexus:
                     if self.can_afford(GATEWAY) and not self.already_pending(GATEWAY):
                         await self.build(GATEWAY, near=position)
+
+                if self.units(CYBERNETICSCORE).ready.exists and (self.units(STARGATE).amount / self.units(NEXUS).amount) < self.stargates_per_nexus: 
+                    if self.can_afford(STARGATE) and not self.already_pending(STARGATE):
+                        await self.build(STARGATE, near=position)
 
 
     async def build_offensive_force(self):
@@ -301,48 +292,60 @@ class BotAA(sc2.BotAI):
             if await self.has_ability(MORPH_WARPGATE, gw) and self.can_afford(MORPH_WARPGATE):
                 await self.do(gw(MORPH_WARPGATE))
             else:
-                if self.can_afford(STALKER) and self.supply_left > 0:
+                if self.can_afford(STALKER) and self.supply_left > 0 and self.stalker_ratio * self.army_size() >= self.units(STALKER).amount:
                     await self.do(gw.train(STALKER))
 
         for warpgate in self.units(WARPGATE).ready.idle:
             # Warp Stalkers to the closest pylon from enemy base
-            if await self.has_ability(WARPGATETRAIN_ZEALOT, warpgate) and self.can_afford(STALKER):
+            if await self.has_ability(WARPGATETRAIN_ZEALOT, warpgate) and self.can_afford(STALKER) and self.supply_left > 0 and self.stalker_ratio * self.army_size() >= self.units(STALKER).amount:
                 pos = self.units(PYLON).ready.closest_to(self.find_target(self.state)).position.to2.random_on_distance(4)
                 placement = await self.find_placement(WARPGATETRAIN_STALKER, pos, placement_step=1)
                 if placement:
                     await self.do(warpgate.warp_in(STALKER, placement))
 
+        for stargate in self.units(STARGATE).ready.idle:
+            if self.can_afford(VOIDRAY) and self.supply_left > 0 and self.voidray_ratio * self.army_size() >= self.units(VOIDRAY).amount:
+                await self.do(stargate.train(VOIDRAY))
+
+
+    def army_size(self):
+        return (self.units(STALKER).amount + self.units(VOIDRAY).amount)
+        
 
     def find_target(self, state):
         if len(self.known_enemy_units) > 0:
             return random.choice(self.known_enemy_units)
         elif len(self.known_enemy_structures) > 0:
             return random.choice(self.known_enemy_structures)
+        elif not self.nearby_enemy_units(self.units(STALKER).random, 10).exists and self.known_enemy_units.amount <= 0:
+            return random.choice(list(self.expansion_locations.keys()))
         else:
             return self.enemy_start_locations[0]
          
 
-    # TODO: Better attack conditions. Separate between attack and defense. Assign units only to defend?
     async def manage_army(self):
         # We attack if we have minimum army size or if population is nearly full
-        if self.units(STALKER).amount >= self.min_army_size or self.supply_cap >= 190:
+        if self.army_size() >= self.min_army_size or self.supply_cap >= 190:
+            target = self.find_target(self.state)
             for s in self.units(STALKER).idle:
-                await self.do(s.attack(self.find_target(self.state)))
-                print("ATTACK!")
+                await self.do(s.attack(target))
+            for v in self.units(VOIDRAY).idle:
+                await self.do(v.attack(target))
 
         # Defend from enemies near our nexuses
-        elif self.units(STALKER).amount > 3 and len(self.known_enemy_units) > 0:
-            close_enemy_units = await self.nexus_has_enemy_nearby()
-            if len(close_enemy_units) > 0:
-                for s in self.units(STALKER).idle:
-                    await self.do(s.attack(random.choice(close_enemy_units).position.towards(self.enemy_start_locations[0])))
-                    print("DEFEND!")
+        nexus_has_close_enemy = await self.nexus_has_enemy_nearby()
+        if self.army_size() > 3 and len(nexus_has_close_enemy) > 0:
+            position = random.choice(nexus_has_close_enemy).position.towards(self.game_info.map_center, random.randrange(5, 15))
+            for s in self.units(STALKER).idle:
+                await self.do(s.attack(position))
+            for v in self.units(VOIDRAY).idle:
+                await self.do(v.attack(position))
 
 
     async def nexus_has_enemy_nearby(self):
         nexus_with_enemy = []
         for nexus in self.units(NEXUS):
-            if self.nearby_enemy_units(nexus):
+            if self.nearby_enemy_units(nexus, 30):
                 nexus_with_enemy.append(nexus)
         return nexus_with_enemy
 
@@ -350,7 +353,7 @@ class BotAA(sc2.BotAI):
     async def manage_bases(self):
         for nexus in self.units(NEXUS).ready:
             await self.build_workers(nexus)
-            await self.handle_chronoboost(nexus)
+            await self.manage_chronoboost(nexus)
             await self.build_assimilators(nexus)
             await self.build_pylons(nexus)
             await self.build_defenses(nexus)
@@ -365,12 +368,7 @@ class BotAA(sc2.BotAI):
             return False
 
 
-    async def handle_chronoboost(self, nexus):
-        '''
-            Early (e): Cybernetics Core > gateway/warpgate > Nexus
-            Late (l): abilities > upgrades > probes > units
-                    Forge > Templar Archives > Cybernetics Core > Robotics Bay > Warpgate
-        '''
+    async def manage_chronoboost(self, nexus):
         if await self.has_ability(EFFECT_CHRONOBOOSTENERGYCOST, nexus) and nexus.energy >= 50:
             if self.strategy == "e":
                 # Focus on CBing Warpgate research (we'll only have 1 cyber)
@@ -411,7 +409,7 @@ class BotAA(sc2.BotAI):
 
 
     async def build_twilight_council(self):
-        if not self.already_pending(TWILIGHTCOUNCIL) and self.can_afford(TWILIGHTCOUNCIL):
+        if self.units(FORGE).amount >= 2 and not self.already_pending(TWILIGHTCOUNCIL) and self.can_afford(TWILIGHTCOUNCIL):
             pylons = self.units(PYLON).ready
             if len(pylons) > 0:
                 await self.build(TWILIGHTCOUNCIL, near=pylons.closest_to(self.units(NEXUS).first))
@@ -427,18 +425,16 @@ class BotAA(sc2.BotAI):
     async def build_proxy_pylon(self):
         if self.units(WARPGATE).ready.exists and self.can_afford(PYLON):
             worker = self.units(PROBE).closest_to(self.units(NEXUS).first)
-
             if worker is not None:   
-                # TODO: change proxy location to be closer to enemy natural
                 p = self.game_info.map_center.towards(self.find_target(self.state), 25)         
                 await self.build(PYLON, near=p, unit=worker)
                 self.proxy_built = True
 
 
 def main():
-    sc2.run_game(sc2.maps.get("Kings Cove LE"), [
+    sc2.run_game(sc2.maps.get("Catalyst LE"), [
         Bot(Race.Protoss, BotAA()),
-        Computer(Race.Zerg, Difficulty.Hard)
+        Computer(Race.Protoss, Difficulty.Hard)
     ], realtime=False)
 
 if __name__ == '__main__':
